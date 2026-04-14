@@ -1,49 +1,118 @@
-#linux-run.sh LINUX_USER_PASSWORD NGROK_AUTH_TOKEN LINUX_USERNAME LINUX_MACHINE_NAME
 #!/bin/bash
-# /home/runner/.ngrok2/ngrok.yml
+# Usage:
+# linux-run.sh LINUX_USER_PASSWORD NGROK_AUTH_TOKEN LINUX_USERNAME LINUX_MACHINE_NAME
 
-sudo useradd -m $LINUX_USERNAME
-sudo adduser $LINUX_USERNAME sudo
-echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
-sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
-sudo hostname $LINUX_MACHINE_NAME
+set -e
 
+LINUX_USER_PASSWORD=$1
+NGROK_AUTH_TOKEN=$2
+LINUX_USERNAME=$3
+LINUX_MACHINE_NAME=$4
+
+# -----------------------------
+# Validate inputs
+# -----------------------------
 if [[ -z "$NGROK_AUTH_TOKEN" ]]; then
-  echo "Please set 'NGROK_AUTH_TOKEN'"
+  echo "❌ NGROK_AUTH_TOKEN is required"
   exit 2
 fi
 
 if [[ -z "$LINUX_USER_PASSWORD" ]]; then
-  echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
+  echo "❌ LINUX_USER_PASSWORD is required"
   exit 3
 fi
 
-echo "### Install ngrok ###"
-
-wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-386.zip
-unzip ngrok-stable-linux-386.zip
-chmod +x ./ngrok
-
-echo "### Update user: $USER password ###"
-echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
-
-echo "### Start ngrok proxy for 22 port ###"
-
-
-rm -f .ngrok.log
-./ngrok authtoken "$NGROK_AUTH_TOKEN"
-./ngrok tcp 22 --log ".ngrok.log" &
-
-sleep 10
-HAS_ERRORS=$(grep "command failed" < .ngrok.log)
-
-if [[ -z "$HAS_ERRORS" ]]; then
-  echo ""
-  echo "=========================================="
-  echo "To connect: $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh $USER@/" | sed "s/:/ -p /")"
-  echo "or conenct with $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh (Your Linux Username)@/" | sed "s/:/ -p /")"
-  echo "=========================================="
-else
-  echo "$HAS_ERRORS"
+if [[ -z "$LINUX_USERNAME" ]]; then
+  echo "❌ LINUX_USERNAME is required"
   exit 4
 fi
+
+if [[ -z "$LINUX_MACHINE_NAME" ]]; then
+  echo "❌ LINUX_MACHINE_NAME is required"
+  exit 5
+fi
+
+# -----------------------------
+# Create user
+# -----------------------------
+echo "### Creating user: $LINUX_USERNAME ###"
+
+if id "$LINUX_USERNAME" &>/dev/null; then
+  echo "User already exists"
+else
+  sudo useradd -m -s /bin/bash "$LINUX_USERNAME"
+  sudo usermod -aG sudo "$LINUX_USERNAME"
+fi
+
+echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
+
+# -----------------------------
+# Set hostname
+# -----------------------------
+echo "### Setting hostname ###"
+sudo hostnamectl set-hostname "$LINUX_MACHINE_NAME"
+
+# -----------------------------
+# Secure SSH (disable password auth)
+# -----------------------------
+echo "### Securing SSH ###"
+
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+
+sudo systemctl restart ssh || sudo service ssh restart
+
+# -----------------------------
+# Install ngrok v3
+# -----------------------------
+echo "### Installing ngrok v3 ###"
+
+rm -f ngrok ngrok.tgz
+
+wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+tar -xzf ngrok-v3-stable-linux-amd64.tgz
+
+chmod +x ngrok
+
+# -----------------------------
+# Authenticate ngrok
+# -----------------------------
+echo "### Configuring ngrok ###"
+
+./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
+
+# -----------------------------
+# Start tunnel
+# -----------------------------
+echo "### Starting ngrok tunnel (SSH on port 22) ###"
+
+rm -f .ngrok.log
+
+./ngrok tcp 22 --log=stdout > .ngrok.log 2>&1 &
+
+sleep 8
+
+# -----------------------------
+# Extract connection info
+# -----------------------------
+TUNNEL=$(grep -oE 'tcp://[0-9a-zA-Z.:]+' .ngrok.log | head -n 1)
+
+if [[ -z "$TUNNEL" ]]; then
+  echo "❌ Failed to start ngrok tunnel"
+  cat .ngrok.log
+  exit 6
+fi
+
+HOST=$(echo "$TUNNEL" | sed 's/tcp:\/\///' | cut -d':' -f1)
+PORT=$(echo "$TUNNEL" | sed 's/tcp:\/\///' | cut -d':' -f2)
+
+# -----------------------------
+# Output connection command
+# -----------------------------
+echo ""
+echo "=========================================="
+echo "✅ SSH ACCESS READY"
+echo ""
+echo "ssh $LINUX_USERNAME@$HOST -p $PORT"
+echo ""
+echo "=========================================="
