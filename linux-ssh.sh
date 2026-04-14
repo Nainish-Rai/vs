@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage:
-# linux-run.sh LINUX_USER_PASSWORD NGROK_AUTH_TOKEN LINUX_USERNAME LINUX_MACHINE_NAME
+# linux-run.sh PASSWORD TOKEN USERNAME HOSTNAME
 
 set -e
 
@@ -38,7 +38,7 @@ fi
 echo "### Creating user: $LINUX_USERNAME ###"
 
 if id "$LINUX_USERNAME" &>/dev/null; then
-  echo "User already exists"
+  echo "User exists"
 else
   sudo useradd -m -s /bin/bash "$LINUX_USERNAME"
   sudo usermod -aG sudo "$LINUX_USERNAME"
@@ -49,15 +49,14 @@ echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
 # -----------------------------
 # Set hostname
 # -----------------------------
-echo "### Setting hostname ###"
 sudo hostnamectl set-hostname "$LINUX_MACHINE_NAME"
 
 # -----------------------------
-# Secure SSH (disable password auth)
+# Enable password SSH (so you can login)
 # -----------------------------
-echo "### Securing SSH ###"
+echo "### Configuring SSH ###"
 
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 
 sudo systemctl restart ssh || sudo service ssh restart
@@ -65,7 +64,7 @@ sudo systemctl restart ssh || sudo service ssh restart
 # -----------------------------
 # Install ngrok v3
 # -----------------------------
-echo "### Installing ngrok v3 ###"
+echo "### Installing ngrok ###"
 
 rm -f ngrok ngrok.tgz
 
@@ -75,18 +74,13 @@ tar -xzf ngrok-v3-stable-linux-amd64.tgz
 chmod +x ngrok
 
 # -----------------------------
-# Authenticate ngrok
+# Start ngrok
 # -----------------------------
-echo "### Configuring ngrok ###"
-
-./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-
-# -----------------------------
-# Start tunnel
-# -----------------------------
-echo "### Starting ngrok tunnel (SSH on port 22) ###"
+echo "### Starting ngrok ###"
 
 rm -f .ngrok.log
+
+./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
 
 ./ngrok tcp 22 --log=stdout > .ngrok.log 2>&1 &
 
@@ -98,7 +92,7 @@ sleep 8
 TUNNEL=$(grep -oE 'tcp://[0-9a-zA-Z.:]+' .ngrok.log | head -n 1)
 
 if [[ -z "$TUNNEL" ]]; then
-  echo "❌ Failed to start ngrok tunnel"
+  echo "❌ ngrok failed"
   cat .ngrok.log
   exit 6
 fi
@@ -107,12 +101,13 @@ HOST=$(echo "$TUNNEL" | sed 's/tcp:\/\///' | cut -d':' -f1)
 PORT=$(echo "$TUNNEL" | sed 's/tcp:\/\///' | cut -d':' -f2)
 
 # -----------------------------
-# Output connection command
+# Output
 # -----------------------------
 echo ""
 echo "=========================================="
-echo "✅ SSH ACCESS READY"
+echo "✅ SSH READY"
 echo ""
 echo "ssh $LINUX_USERNAME@$HOST -p $PORT"
 echo ""
+echo "Password: $LINUX_USER_PASSWORD"
 echo "=========================================="
